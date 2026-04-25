@@ -34,7 +34,7 @@ Réponds UNIQUEMENT avec un JSON valide, aucun texte autour:
   "code": "le code complet du fichier mis à jour"
 }
 
-Fichiers disponibles: brain.js, comms.js, gate.js, index.js, autonome.js  
+Fichiers disponibles: brain.js, comms.js, gate.js, index.js, autonomy.js  
 Le code doit être complet — pas de snippets, le fichier entier.
 `;
 
