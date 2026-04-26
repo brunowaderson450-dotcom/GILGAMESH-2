@@ -15,125 +15,147 @@ const UpdateLog = mongoose.models.UpdateLog || mongoose.model('UpdateLog', new m
     timestamp: { type: Date, default: Date.now }
 }));
 
-// ── FICHIERS AUTORISÉS ────────────────────────────────────
-const FICHIERS_AUTORISÉS = ['brain.js', 'comms.js', 'gate.js', 'index.js'];
+// ── FICHIERS AUTORISÉS (lowercase pour éviter case-sensitivity) ───
+const FICHIERS_AUTORISES = ['brain.js', 'comms.js', 'gate.js', 'index.js', 'autonomy.js'];
+
+// ── VÉRIFICATION SYNTAXE SÉCURISÉE (sans new Function) ───────────
+function verifierSyntaxe(code) {
+    // FIX ERREUR 1 — new Function() est dangereux, on utilise node --check
+    const tmpFile = path.join('/tmp', `gilgamesh_check_${Date.now()}.js`);
+    try {
+        fs.writeFileSync(tmpFile, code, 'utf8');
+        execSync(`node --check ${tmpFile}`, { timeout: 5000 });
+        return { valide: true };
+    } catch (err) {
+        return { valide: false, erreur: err.stderr?.toString() || err.message };
+    } finally {
+        try { fs.unlinkSync(tmpFile); } catch {}
+    }
+}
+
+// ── PARSE JSON SÉCURISÉ ───────────────────────────────────────────
+function parseJSON(raw) {
+    // FIX ERREUR 3 — JSON.parse sans try-catch
+    try {
+        const clean = raw
+            .replace(/```json/gi, '')
+            .replace(/```/g, '')
+            .trim();
+        return { ok: true, data: JSON.parse(clean) };
+    } catch (err) {
+        return { ok: false, erreur: `JSON invalide: ${err.message}` };
+    }
+}
 
 // ── SELF UPDATE ───────────────────────────────────────────
 async function selfUpdate(instruction) {
     console.log(`🔧 Auto-update demandé: ${instruction}`);
 
-    // Étape 1 — Générer le nouveau code via IA 2
     const prompt = `
 Tu es le module de mise à jour de Gilgamesh Nicholas Bruno.
 Instruction reçue: "${instruction}"
 
-Réponds UNIQUEMENT avec un JSON valide, aucun texte autour:
+Réponds UNIQUEMENT avec un JSON valide, aucun texte autour, aucun markdown:
 {
   "fichier": "nom_du_fichier.js",
   "description": "ce que tu changes",
   "code": "le code complet du fichier mis à jour"
 }
 
-Fichiers disponibles: brain.js, comms.js, gate.js, index.js, autonomy.js  
+Fichiers disponibles: brain.js, comms.js, gate.js, index.js, autonomy.js
 Le code doit être complet — pas de snippets, le fichier entier.
 `;
 
-    let result;
+    // Étape 1 — Générer le code
+    let raw;
     try {
-        const raw = await brain.thinkCode(prompt);
-        // Nettoyer la réponse
-        const clean = raw
-            .replace(/```json/g, '')
-            .replace(/```/g, '')
-            .trim();
-        result = JSON.parse(clean);
+        raw = await brain.thinkCode(prompt);
     } catch (err) {
-        return { succes: false, erreur: `IA n'a pas retourné un JSON valide: ${err.message}` };
+        return { succes: false, erreur: `IA inaccessible: ${err.message}` };
     }
 
-    const { fichier, description, code } = result;
+    // Étape 2 — Parser le JSON (FIX ERREUR 3)
+    const parsed = parseJSON(raw);
+    if (!parsed.ok) return { succes: false, erreur: parsed.erreur };
 
-    // Étape 2 — Vérifier que le fichier est autorisé
-    if (!FICHIERS_AUTORISÉS.includes(fichier)) {
+    const { fichier, description, code } = parsed.data;
+
+    // Étape 3 — Vérifier fichier autorisé (FIX ERREUR 4 — case insensitive)
+    const fichierNormalise = fichier?.toLowerCase();
+    if (!FICHIERS_AUTORISES.includes(fichierNormalise)) {
         return { succes: false, erreur: `Fichier non autorisé: ${fichier}` };
     }
 
-    const filePath = path.join(__dirname, fichier);
+    // Utiliser le nom exact lowercase
+    const filePath = path.join(__dirname, fichierNormalise);
 
-    // Étape 3 — Backup de l'ancien code
-    let ancienCode = '';
+    // Étape 4 — Backup ancien code
+    let ancienCode = '// nouveau fichier';
     try {
         ancienCode = fs.readFileSync(filePath, 'utf8');
-    } catch (e) {
-        ancienCode = '// nouveau fichier';
-    }
+    } catch {}
 
-    // Étape 4 — Test syntaxique du nouveau code
-    try {
-        new Function(code); // vérifie la syntaxe basique
-    } catch (syntaxErr) {
+    // Étape 5 — Vérification syntaxe SÉCURISÉE (FIX ERREUR 1)
+    const syntaxCheck = verifierSyntaxe(code);
+    if (!syntaxCheck.valide) {
         await UpdateLog.create({
-            instruction, fichier,
-            ancien_code: ancienCode,
-            nouveau_code: code,
-            succes: false,
-            erreur: `Erreur syntaxe: ${syntaxErr.message}`
+            instruction, fichier: fichierNormalise,
+            ancien_code: ancienCode, nouveau_code: code,
+            succes: false, erreur: syntaxCheck.erreur
         });
-        return { succes: false, erreur: `Syntaxe invalide: ${syntaxErr.message}` };
+        return { succes: false, erreur: `Syntaxe invalide: ${syntaxCheck.erreur}` };
     }
 
-    // Étape 5 — Écrire le nouveau code
+    // Étape 6 — Écrire le fichier
     try {
         fs.writeFileSync(filePath, code, 'utf8');
-        console.log(`✅ ${fichier} mis à jour: ${description}`);
+        console.log(`✅ ${fichierNormalise} mis à jour: ${description}`);
     } catch (writeErr) {
         return { succes: false, erreur: `Écriture impossible: ${writeErr.message}` };
     }
 
-    // Étape 6 — Logger le succès
+    // Étape 7 — Logger
     await UpdateLog.create({
-        instruction, fichier,
-        ancien_code: ancienCode,
-        nouveau_code: code,
+        instruction, fichier: fichierNormalise,
+        ancien_code: ancienCode, nouveau_code: code,
         succes: true
     });
 
-    // Étape 7 — Redémarrer Gilgamesh
-    console.log('🔄 Redémarrage de Gilgamesh...');
+    // Étape 8 — Redémarrer
+    console.log('🔄 Redémarrage dans 3s...');
     setTimeout(() => {
-        try {
-            execSync('pm2 restart gilgamesh');
-        } catch {
-            // Si pas PM2, forcer un exit (Render/Oracle redémarre auto)
-            process.exit(0);
-        }
-    }, 2000);
+        try { execSync('pm2 restart gilgamesh'); }
+        catch { process.exit(0); }
+    }, 3000);
 
     return { succes: true, description };
 }
 
 // ── ROLLBACK ──────────────────────────────────────────────
 async function rollback(fichier) {
-    const dernierUpdate = await UpdateLog.findOne({
-        fichier,
-        succes: true
-    }).sort({ timestamp: -1 });
+    const fichierNormalise = fichier?.toLowerCase();
 
-    if (!dernierUpdate || !dernierUpdate.ancien_code) {
-        return { succes: false, erreur: `Aucun backup trouvé pour ${fichier}` };
+    if (!FICHIERS_AUTORISES.includes(fichierNormalise)) {
+        return { succes: false, erreur: `Fichier non autorisé: ${fichier}` };
     }
 
-    const filePath = path.join(__dirname, fichier);
-    fs.writeFileSync(filePath, dernierUpdate.ancien_code, 'utf8');
+    const dernierUpdate = await UpdateLog.findOne({ fichier: fichierNormalise, succes: true })
+        .sort({ timestamp: -1 });
 
-    console.log(`⏪ Rollback de ${fichier} effectué`);
+    if (!dernierUpdate?.ancien_code) {
+        return { succes: false, erreur: `Aucun backup trouvé pour ${fichierNormalise}` };
+    }
+
+    const filePath = path.join(__dirname, fichierNormalise);
+    fs.writeFileSync(filePath, dernierUpdate.ancien_code, 'utf8');
+    console.log(`⏪ Rollback de ${fichierNormalise} effectué`);
 
     setTimeout(() => {
         try { execSync('pm2 restart gilgamesh'); }
         catch { process.exit(0); }
-    }, 2000);
+    }, 3000);
 
-    return { succes: true, message: `${fichier} restauré à la version précédente` };
+    return { succes: true, message: `${fichierNormalise} restauré à la version précédente` };
 }
 
 // ── HISTORIQUE ────────────────────────────────────────────
@@ -146,8 +168,9 @@ async function historique(limite = 5) {
     if (!logs.length) return 'Aucun update enregistré.';
 
     return logs.map((l, i) =>
-        `${i + 1}. [${l.succes ? '✅' : '❌'}] ${l.fichier}\n   → ${l.instruction}\n   → ${new Date(l.timestamp).toLocaleString()}`
+        `${i + 1}. [${l.succes ? '✅' : '❌'}] ${l.fichier}\n   → ${l.instruction}\n   → ${new Date(l.timestamp).toLocaleString('fr-FR')}`
     ).join('\n\n');
 }
 
 module.exports = { selfUpdate, rollback, historique };
+
