@@ -20,10 +20,14 @@ async function connectDB() {
 // ── WHATSAPP ──────────────────────────────────────────────
 let sock = null;
 let waConnected = false;
+let isReconnecting = false; // FIX 5 — Race condition
 
 async function startGilgamesh() {
     await connectDB();
+    await connectWA();
+}
 
+async function connectWA() {
     const { state, saveCreds } = await useMongoDBAuthState();
     const { version } = await fetchLatestBaileysVersion();
 
@@ -39,10 +43,10 @@ async function startGilgamesh() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    // ── CONNEXION STATUS ──────────────────────────────────
-    sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+    sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
         if (connection === 'open') {
             waConnected = true;
+            isReconnecting = false; // FIX 5
             console.log('✅ Gilgamesh connecté à WhatsApp');
             await send(WONDER_JID, `👑 *Gilgamesh en ligne.*\nJe suis là, Wonder.`);
             autonomy.init(send, WONDER_JID);
@@ -55,18 +59,25 @@ async function startGilgamesh() {
 
             console.log(`⚠️ Déconnecté (code ${code})`);
 
-            if (shouldReconnect) {
+            // FIX 5 — Éviter double reconnexion (race condition)
+            if (shouldReconnect && !isReconnecting) {
+                isReconnecting = true;
                 console.log('🔄 Reconnexion dans 10s...');
-                setTimeout(startGilgamesh, 10000);
-            } else {
+                setTimeout(async () => {
+                    try {
+                        await connectWA();
+                    } catch (err) {
+                        console.error('Reconnexion échouée:', err.message);
+                        isReconnecting = false;
+                    }
+                }, 10000);
+            } else if (!shouldReconnect) {
                 console.log('❌ Déconnecté définitivement. Scan QR requis.');
-                // Tenter de contacter Wonder par d'autres canaux
                 await comms.alertWonder('WhatsApp déconnecté. Rescan QR requis.');
             }
         }
     });
 
-    // ── MESSAGES ──────────────────────────────────────────
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
 
@@ -77,7 +88,6 @@ async function startGilgamesh() {
             const sender = m.key.participant || jid;
             const isWonder = jid === WONDER_JID || sender.includes(process.env.WONDER_NUMBER);
 
-            // Extraire texte
             const text = (
                 m.message?.conversation ||
                 m.message?.extendedTextMessage?.text ||
@@ -87,13 +97,11 @@ async function startGilgamesh() {
 
             if (!text) continue;
 
-            // Commandes
             if (text.startsWith('!') || text.startsWith('/')) {
                 await handleCommand(jid, sender, text, m, isWonder);
                 return;
             }
 
-            // Réponse IA — Wonder en privé = toujours, groupe = si mentionné
             const isGroup = jid.endsWith('@g.us');
             const isMentioned = text.toLowerCase().includes('gilgamesh');
             if (!isGroup || isMentioned || isWonder) {
@@ -110,7 +118,7 @@ async function handleCommand(jid, sender, text, m, isWonder) {
 
     switch (cmd.toLowerCase()) {
         case 'ping':
-            await send(jid, `👑 En ligne. Latence: ${Date.now() % 1000}ms`);
+            await send(jid, `👑 En ligne.`);
             break;
 
         case 'status':
@@ -125,21 +133,14 @@ async function handleCommand(jid, sender, text, m, isWonder) {
             await send(jid, thought);
             break;
 
-        case 'oublie':
-        case 'forget':
-            if (!isWonder) { await send(jid, `Non.`); return; }
-            await mongoose.model('Memory').deleteMany({ userId: sender });
-            await send(jid, `Mémoire effacée.`);
-            break;
-
         case 'update':
             if (!isWonder) { await send(jid, `Non.`); return; }
             if (!arg) { await send(jid, `Donne-moi l'instruction.`); return; }
             await send(jid, `🔧 Analyse en cours...`);
             const updateResult = await gate.selfUpdate(arg);
-            if (updateResult.succes) { await send(jid, `✅ Fait: ${updateResult.description}
-🔄 Redémarrage...`); }
-            else { await send(jid, `❌ Échec: ${updateResult.erreur}`); }
+            await send(jid, updateResult.succes
+                ? `✅ Fait: ${updateResult.description}\n🔄 Redémarrage...`
+                : `❌ Échec: ${updateResult.erreur}`);
             break;
 
         case 'rollback':
@@ -152,14 +153,20 @@ async function handleCommand(jid, sender, text, m, isWonder) {
         case 'historique':
             if (!isWonder) { await send(jid, `Non.`); return; }
             const hist = await gate.historique(5);
-            await send(jid, `📋 *HISTORIQUE*
-
-${hist}`);
+            await send(jid, `📋 *HISTORIQUE*\n\n${hist}`);
             break;
 
+        case 'oublie':
+        case 'forget':
+            if (!isWonder) { await send(jid, `Non.`); return; }
+            await mongoose.model('Memory').deleteMany({ userId: 'wonder' });
+            await send(jid, `Mémoire effacée.`);
+            break;
+
+        // FIX 2 — Message d'aide complet, non tronqué
         case 'aide':
         case 'help':
-            await send(jid, `*COMMANDES GILGAMESH*\n\n!ping — vérifier si en ligne\n!status — état des systèmes\n!pense [prompt] — mode code IA\n!update [instruction] — auto-update\n!rollback [fichier] — restaurer\n!historique — voir les updates\n!oublie — effacer mémoire\n\n— Gilgamesh Nicholas Bruno`);
+            await send(jid, `*COMMANDES GILGAMESH*\n\n!ping — vérifier si en ligne\n!status — état des systèmes\n!pense [prompt] — mode code IA\n!update [instruction] — auto-update du code\n!rollback [fichier] — restaurer version précédente\n!historique — voir les updates passés\n!oublie — effacer la mémoire\n\n— Gilgamesh Nicholas Bruno 👑`);
             break;
 
         default:
@@ -195,3 +202,4 @@ startGilgamesh().catch(err => {
     console.error('Erreur fatale:', err);
     process.exit(1);
 });
+
