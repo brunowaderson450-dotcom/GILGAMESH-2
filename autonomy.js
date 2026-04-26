@@ -219,3 +219,4 @@ async function onWonderMessage(text) {
 }
 
 module.exports = { init, think, contactWonder, onWonderMessage };
+
