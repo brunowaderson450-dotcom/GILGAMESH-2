@@ -201,5 +201,5 @@ async function send(jid, text) {
 startGilgamesh().catch(err => {
     console.error('Erreur fatale:', err);
     process.exit(1);
-});
+}); 
 
