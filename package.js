@@ -1,7 +1,7 @@
 {
   "name": "gilgamesh-absolu",
   "version": "2.0.0",
-  "description": "Gilgamesh Nicholas Bruno — NEO-BOTIX Empire",
+  "description": "Gilgamesh Nicholas Bruno — NWB Empire",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -14,9 +14,11 @@
     "nodemailer": "^6.9.13",
     "qrcode-terminal": "^0.12.0",
     "pino": "^9.2.0",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "https": "^1.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
   }
 }
+
