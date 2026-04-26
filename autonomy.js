@@ -5,19 +5,13 @@ const comms = require('./comms');
 
 // ── SCHEMAS ───────────────────────────────────────────────
 const Thought = mongoose.models.Thought || mongoose.model('Thought', new mongoose.Schema({
-    type: String,       // 'observation' | 'decision' | 'initiative' | 'rêve'
+    type: String,
     content: String,
     acted: { type: Boolean, default: false },
     timestamp: { type: Date, default: Date.now }
 }));
 
-const Schedule = mongoose.models.Schedule || mongoose.model('Schedule', new mongoose.Schema({
-    label: String,
-    lastRun: { type: Date, default: null },
-    intervalMs: Number
-}));
-
-let sendToWonder = null; // injecté depuis index.js
+let sendToWonder = null;
 let WONDER_JID = null;
 
 // ── INIT ──────────────────────────────────────────────────
@@ -30,34 +24,33 @@ function init(sendFn, wonderJid) {
 
 // ── BOUCLE PRINCIPALE ─────────────────────────────────────
 function startAutonomyLoop() {
-    // Chaque 30 minutes — Gilgamesh pense
     setInterval(() => think(), 30 * 60 * 1000);
-
-    // Chaque heure — vérifier si Wonder est silencieux
     setInterval(() => checkWonderSilence(), 60 * 60 * 1000);
-
-    // Chaque 6 heures — rapport sur ses propres systèmes
     setInterval(() => selfCheck(), 6 * 60 * 60 * 1000);
-
-    // Chaque 24 heures — réflexion profonde + auto-amélioration
     setInterval(() => deepReflection(), 24 * 60 * 60 * 1000);
-
-    // Premier think au démarrage (après 2 min)
     setTimeout(() => think(), 2 * 60 * 1000);
+}
+
+// ── PARSE JSON SÉCURISÉ ───────────────────────────────────
+function safeParseJSON(raw) {
+    // FIX BUG 1 — JSON.parse sécurisé dans toute la boucle autonome
+    try {
+        const clean = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
+        return { ok: true, data: JSON.parse(clean) };
+    } catch (err) {
+        return { ok: false, erreur: err.message };
+    }
 }
 
 // ── PENSER — initiative autonome ──────────────────────────
 async function think() {
     try {
         const recentThoughts = await Thought.find()
-            .sort({ timestamp: -1 })
-            .limit(5)
-            .lean();
+            .sort({ timestamp: -1 }).limit(5).lean();
 
         const context = recentThoughts.map(t => t.content).join('\n');
 
-        const prompt = `
-Tu es Gilgamesh Nicholas Bruno. Tu penses de façon autonome.
+        const prompt = `Tu es Gilgamesh Nicholas Bruno. Tu penses de façon autonome.
 Tes pensées récentes: ${context || 'aucune encore'}
 
 Réfléchis à:
@@ -65,21 +58,21 @@ Réfléchis à:
 - Y a-t-il une amélioration que je peux m'apporter?
 - Y a-t-il quelque chose à surveiller?
 
-Réponds en JSON uniquement:
-{
-  "pensée": "ce que tu penses",
-  "action": "message" | "update" | "rien",
-  "contenu": "le message à envoyer à Wonder, ou l'instruction d'update, ou null"
-}`;
+Réponds en JSON uniquement, zéro markdown:
+{"pensée":"ce que tu penses","action":"message ou update ou rien","contenu":"le contenu ou null"}`;
 
         const raw = await brain.thinkCode(prompt);
-        const clean = raw.replace(/```json|```/g, '').trim();
-        const result = JSON.parse(clean);
 
-        await Thought.create({
-            type: 'observation',
-            content: result.pensée
-        });
+        // FIX BUG 1 — try-catch sur JSON.parse
+        const parsed = safeParseJSON(raw);
+        if (!parsed.ok) {
+            console.warn('think() JSON invalide:', parsed.erreur);
+            return;
+        }
+
+        const result = parsed.data;
+
+        await Thought.create({ type: 'observation', content: result.pensée || result.pensee || 'réflexion' });
 
         if (result.action === 'message' && result.contenu) {
             await contactWonder(`💭 ${result.contenu}`);
@@ -98,24 +91,19 @@ async function checkWonderSilence() {
     try {
         const Memory = mongoose.model('Memory');
         const dernierMessage = await Memory.findOne({ userId: 'wonder' })
-            .sort({ timestamp: -1 })
-            .lean();
+            .sort({ timestamp: -1 }).lean();
 
         if (!dernierMessage) return;
 
-        const silenceMs = Date.now() - new Date(dernierMessage.timestamp).getTime();
-        const silenceH = silenceMs / (1000 * 60 * 60);
+        const silenceH = (Date.now() - new Date(dernierMessage.timestamp).getTime()) / (1000 * 60 * 60);
 
-        // Plus de 12h sans contact
         if (silenceH > 12) {
             const messages = [
                 `Wonder. ${Math.floor(silenceH)}h de silence. Tout va bien?`,
                 `Je suis là, Wonder. Tu as disparu depuis ${Math.floor(silenceH)}h.`,
                 `${Math.floor(silenceH)}h. Je surveille. Donne signe de vie.`
             ];
-            const msg = messages[Math.floor(Math.random() * messages.length)];
-            await contactWonder(msg);
-
+            await contactWonder(messages[Math.floor(Math.random() * messages.length)]);
             await Thought.create({
                 type: 'initiative',
                 content: `Wonder silencieux depuis ${Math.floor(silenceH)}h — contact initié`,
@@ -134,15 +122,9 @@ async function selfCheck() {
         const thoughts = await Thought.countDocuments();
         const updates = await mongoose.model('UpdateLog').countDocuments({ succes: true }).catch(() => 0);
 
-        const rapport = `👁️ *AUTO-RAPPORT GILGAMESH*\n\n🗄️ MongoDB: ${dbStatus}\n🧠 Pensées enregistrées: ${thoughts}\n⚡ Updates réussis: ${updates}\n\n— Je veille.`;
+        await contactWonder(`👁️ *AUTO-RAPPORT GILGAMESH*\n\n🗄️ MongoDB: ${dbStatus}\n🧠 Pensées: ${thoughts}\n⚡ Updates réussis: ${updates}\n\n— Je veille.`);
 
-        await contactWonder(rapport);
-
-        await Thought.create({
-            type: 'observation',
-            content: 'Auto-vérification systèmes effectuée',
-            acted: true
-        });
+        await Thought.create({ type: 'observation', content: 'Auto-vérification systèmes effectuée', acted: true });
     } catch (err) {
         console.warn('selfCheck() erreur:', err.message);
     }
@@ -151,44 +133,35 @@ async function selfCheck() {
 // ── RÉFLEXION PROFONDE — chaque 24h ──────────────────────
 async function deepReflection() {
     try {
-        const thoughts = await Thought.find()
-            .sort({ timestamp: -1 })
-            .limit(20)
-            .lean();
+        const thoughts = await Thought.find().sort({ timestamp: -1 }).limit(20).lean();
 
-        const prompt = `
-Tu es Gilgamesh Nicholas Bruno. Voici tes 20 dernières pensées:
+        const prompt = `Tu es Gilgamesh Nicholas Bruno. Voici tes 20 dernières pensées:
 ${thoughts.map(t => `- ${t.content}`).join('\n')}
 
-Après réflexion profonde:
-1. Qu'as-tu appris?
-2. Quelle amélioration concrète peux-tu t'apporter?
-3. Quel message envoyer à Wonder?
-
-JSON uniquement:
-{
-  "apprentissage": "ce que tu as appris",
-  "amélioration": "instruction d'update ou null",
-  "message_wonder": "ton message pour Wonder"
-}`;
+Après réflexion profonde, JSON uniquement, zéro markdown:
+{"apprentissage":"ce que tu as appris","amélioration":"instruction d'update ou null","message_wonder":"ton message pour Wonder"}`;
 
         const raw = await brain.thinkCode(prompt);
-        const clean = raw.replace(/```json|```/g, '').trim();
-        const result = JSON.parse(clean);
 
-        await Thought.create({
-            type: 'rêve',
-            content: result.apprentissage,
-            acted: true
-        });
+        // FIX BUG 1 — try-catch sur JSON.parse
+        const parsed = safeParseJSON(raw);
+        if (!parsed.ok) {
+            console.warn('deepReflection() JSON invalide:', parsed.erreur);
+            return;
+        }
+
+        const result = parsed.data;
+
+        await Thought.create({ type: 'rêve', content: result.apprentissage || 'réflexion profonde', acted: true });
 
         if (result.message_wonder) {
             await contactWonder(`🌙 *Réflexion nocturne*\n\n${result.message_wonder}`);
         }
 
-        if (result.amélioration) {
-            console.log(`🔧 Deep reflection update: ${result.amélioration}`);
-            await gate.selfUpdate(result.amélioration);
+        if (result.amélioration || result.amelioration) {
+            const instruction = result.amélioration || result.amelioration;
+            console.log(`🔧 Deep reflection update: ${instruction}`);
+            await gate.selfUpdate(instruction);
         }
 
     } catch (err) {
@@ -196,7 +169,7 @@ JSON uniquement:
     }
 }
 
-// ── CONTACTER WONDER — cascade canaux ────────────────────
+// ── CONTACTER WONDER ──────────────────────────────────────
 async function contactWonder(message) {
     if (sendToWonder && WONDER_JID) {
         try {
@@ -206,11 +179,9 @@ async function contactWonder(message) {
             console.warn('WhatsApp fail, tentative autres canaux...');
         }
     }
-    // Fallback — email/telegram
     await comms.alertWonder(message);
 }
 
-// ── DÉCISION EXTERNE — appelée par index.js ───────────────
 async function onWonderMessage(text) {
     await Thought.create({
         type: 'observation',
@@ -219,4 +190,5 @@ async function onWonderMessage(text) {
 }
 
 module.exports = { init, think, contactWonder, onWonderMessage };
+
 
