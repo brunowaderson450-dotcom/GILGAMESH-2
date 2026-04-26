@@ -172,5 +172,5 @@ async function historique(limite = 5) {
     ).join('\n\n');
 }
 
-module.exports = { selfUpdate, rollback, historique };
+module.exports = { selfUpdate, rollback, historique }; 
 
