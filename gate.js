@@ -1,3 +1,4 @@
+require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
@@ -15,12 +16,11 @@ const UpdateLog = mongoose.models.UpdateLog || mongoose.model('UpdateLog', new m
     timestamp: { type: Date, default: Date.now }
 }));
 
-// ── FICHIERS AUTORISÉS (lowercase pour éviter case-sensitivity) ───
+// ── FICHIERS AUTORISÉS ────────────────────────────────────
 const FICHIERS_AUTORISES = ['brain.js', 'comms.js', 'gate.js', 'index.js', 'autonomy.js'];
 
-// ── VÉRIFICATION SYNTAXE SÉCURISÉE (sans new Function) ───────────
+// ── VÉRIFICATION SYNTAXE ──────────────────────────────────
 function verifierSyntaxe(code) {
-    // FIX ERREUR 1 — new Function() est dangereux, on utilise node --check
     const tmpFile = path.join('/tmp', `gilgamesh_check_${Date.now()}.js`);
     try {
         fs.writeFileSync(tmpFile, code, 'utf8');
@@ -33,9 +33,8 @@ function verifierSyntaxe(code) {
     }
 }
 
-// ── PARSE JSON SÉCURISÉ ───────────────────────────────────────────
+// ── PARSE JSON SÉCURISÉ ───────────────────────────────────
 function parseJSON(raw) {
-    // FIX ERREUR 3 — JSON.parse sans try-catch
     try {
         const clean = raw
             .replace(/```json/gi, '')
@@ -74,19 +73,18 @@ Le code doit être complet — pas de snippets, le fichier entier.
         return { succes: false, erreur: `IA inaccessible: ${err.message}` };
     }
 
-    // Étape 2 — Parser le JSON (FIX ERREUR 3)
+    // Étape 2 — Parser le JSON
     const parsed = parseJSON(raw);
     if (!parsed.ok) return { succes: false, erreur: parsed.erreur };
 
     const { fichier, description, code } = parsed.data;
 
-    // Étape 3 — Vérifier fichier autorisé (FIX ERREUR 4 — case insensitive)
+    // Étape 3 — Vérifier fichier autorisé
     const fichierNormalise = fichier?.toLowerCase();
     if (!FICHIERS_AUTORISES.includes(fichierNormalise)) {
         return { succes: false, erreur: `Fichier non autorisé: ${fichier}` };
     }
 
-    // Utiliser le nom exact lowercase
     const filePath = path.join(__dirname, fichierNormalise);
 
     // Étape 4 — Backup ancien code
@@ -95,7 +93,7 @@ Le code doit être complet — pas de snippets, le fichier entier.
         ancienCode = fs.readFileSync(filePath, 'utf8');
     } catch {}
 
-    // Étape 5 — Vérification syntaxe SÉCURISÉE (FIX ERREUR 1)
+    // Étape 5 — Vérification syntaxe
     const syntaxCheck = verifierSyntaxe(code);
     if (!syntaxCheck.valide) {
         await UpdateLog.create({
@@ -121,12 +119,12 @@ Le code doit être complet — pas de snippets, le fichier entier.
         succes: true
     });
 
-    // Étape 8 — Redémarrer pour Render
+    // Étape 8 — Redémarrer
     console.log('🔄 Signal de redémarrage envoyé...');
-    setTimeout(() => {
-        process.exit(0); // On coupe, Render relance tout seul
-    }, 3000);
+    setTimeout(() => process.exit(0), 3000);
 
+    return { succes: true, message: `${fichierNormalise} mis à jour: ${description}. Redémarrage...` };
+} // ← accolade manquante ajoutée ici
 
 // ── ROLLBACK ──────────────────────────────────────────────
 async function rollback(fichier) {
@@ -143,15 +141,11 @@ async function rollback(fichier) {
         return { succes: false, erreur: `Aucun backup trouvé pour ${fichierNormalise}` };
     }
 
-    // 1. D'abord on remet l'ancien code dans le fichier
     const filePath = path.join(__dirname, fichierNormalise);
     fs.writeFileSync(filePath, dernierUpdate.ancien_code, 'utf8');
     console.log(`⏪ Rollback de ${fichierNormalise} effectué`);
 
-    // 2. Ensuite on attend un peu et on s'éteint pour que Render relance
-    setTimeout(() => {
-        process.exit(0);
-    }, 3000);
+    setTimeout(() => process.exit(0), 3000);
 
     return { succes: true, message: `Rollback de ${fichierNormalise} réussi. Redémarrage...` };
 }
@@ -170,5 +164,4 @@ async function historique(limite = 5) {
     ).join('\n\n');
 }
 
-module.exports = { selfUpdate, rollback, historique }; 
-
+module.exports = { selfUpdate, rollback, historique };
