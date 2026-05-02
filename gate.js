@@ -121,15 +121,12 @@ Le code doit être complet — pas de snippets, le fichier entier.
         succes: true
     });
 
-    // Étape 8 — Redémarrer
-    console.log('🔄 Redémarrage dans 3s...');
+    // Étape 8 — Redémarrer pour Render
+    console.log('🔄 Signal de redémarrage envoyé...');
     setTimeout(() => {
-        try { execSync('pm2 restart gilgamesh'); }
-        catch { process.exit(0); }
+        process.exit(0); // On coupe, Render relance tout seul
     }, 3000);
 
-    return { succes: true, description };
-}
 
 // ── ROLLBACK ──────────────────────────────────────────────
 async function rollback(fichier) {
@@ -146,16 +143,17 @@ async function rollback(fichier) {
         return { succes: false, erreur: `Aucun backup trouvé pour ${fichierNormalise}` };
     }
 
+    // 1. D'abord on remet l'ancien code dans le fichier
     const filePath = path.join(__dirname, fichierNormalise);
     fs.writeFileSync(filePath, dernierUpdate.ancien_code, 'utf8');
     console.log(`⏪ Rollback de ${fichierNormalise} effectué`);
 
+    // 2. Ensuite on attend un peu et on s'éteint pour que Render relance
     setTimeout(() => {
-        try { execSync('pm2 restart gilgamesh'); }
-        catch { process.exit(0); }
+        process.exit(0);
     }, 3000);
 
-    return { succes: true, message: `${fichierNormalise} restauré à la version précédente` };
+    return { succes: true, message: `Rollback de ${fichierNormalise} réussi. Redémarrage...` };
 }
 
 // ── HISTORIQUE ────────────────────────────────────────────
