@@ -1,12 +1,19 @@
+require('dotenv').config();
 const Groq = require('groq-sdk');
 const mongoose = require('mongoose');
 const { savage, needsSavage } = require('./savage');
 
-const groq = new Groq({
-    apiKey: process.env.GROQ_API_KEY,
-    timeout: 30000,
-    maxRetries: 2
-});
+let groq;
+function getGroq() {
+    if (!groq) {
+        groq = new Groq({
+            apiKey: process.env.GROQ_API_KEY,
+            timeout: 30000,
+            maxRetries: 2
+        });
+    }
+    return groq;
+}
 
 const Memory = mongoose.models.Memory || mongoose.model('Memory', new mongoose.Schema({
     userId: String,
@@ -59,7 +66,7 @@ async function think(userId, userMessage) {
 
     let reply;
     try {
-        const response = await groq.chat.completions.create({
+        const response = await getGroq().chat.completions.create({
             model: 'llama-3.3-70b-versatile',
             messages: [{ role: 'system', content: GILGAMESH_PERSONA }, ...messages],
             max_tokens: 1024,
@@ -88,7 +95,7 @@ async function think(userId, userMessage) {
 async function thinkCode(prompt) {
     let reply;
     try {
-        const response = await groq.chat.completions.create({
+        const response = await getGroq().chat.completions.create({
             model: 'llama-3.3-70b-versatile',
             messages: [
                 {
@@ -131,10 +138,8 @@ async function process(userId, text) {
         return mode === 'code' ? await thinkCode(text) : await think(userId, text);
     } catch (err) {
         await Log.create({ type: 'error', content: err.message }).catch(() => {});
-        // Dernier recours — IA 3 directement
         try { return await savage(text); } catch { return `Interférence totale. Réessaie.`; }
     }
 }
 
 module.exports = { process, think, thinkCode };
- 
