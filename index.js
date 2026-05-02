@@ -1,4 +1,7 @@
 require('dotenv').config();
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 3000;
 const { default: makeWASocket, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const { useMongoDBAuthState } = require('./auth-mongo');
 const { Boom } = require('@hapi/boom');
@@ -10,6 +13,12 @@ const gate = require('./gate');
 const autonomy = require('./autonomy');
 
 const WONDER_JID = `${process.env.WONDER_NUMBER}@s.whatsapp.net`;
+
+// Petit serveur pour maintenir le bot en vie sur Render
+app.get('/', (req, res) => res.send('👑 Gilgamesh est en ligne.'));
+app.listen(PORT, () => {
+    console.log(`✅ Serveur de monitoring actif sur le port ${PORT}`);
+});
 
 // ── MONGODB ───────────────────────────────────────────────
 async function connectDB() {
@@ -27,19 +36,24 @@ async function startGilgamesh() {
     await connectWA();
 }
 
-async function connectWA() {
-    const { state, saveCreds } = await useMongoDBAuthState();
-    const { version } = await fetchLatestBaileysVersion();
-
     sock = makeWASocket({
         version,
         auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: true,
-        browser: ['Gilgamesh', 'Chrome', '120.0.0'],
-        connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: 30000,
+        printQRInTerminal: false, // On désactive le QR
+        browser: ["Ubuntu", "Chrome", "20.0.04"], // Indispensable pour le code
     });
+
+    // --- LOGIQUE DU PAIRING CODE ---
+    if (!sock.authState.creds.registered) {
+        const phoneNumber = process.env.WONDER_NUMBER; 
+        setTimeout(async () => {
+            let code = await sock.requestPairingCode(phoneNumber);
+            code = code?.match(/.{1,4}/g)?.join("-") || code;
+            console.log(`\n👑 [ PAIRING CODE ] : ${code.toUpperCase()}\n`);
+        }, 3000);
+    }
+
 
     sock.ev.on('creds.update', saveCreds);
 
