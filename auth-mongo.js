@@ -1,31 +1,48 @@
+require('dotenv').config();
 const mongoose = require('mongoose');
+const { initAuthCreds, BufferJSON } = require('@whiskeysockets/baileys');
 
 const AuthSchema = new mongoose.Schema({
     _id: String,
-    data: mongoose.Schema.Types.Mixed
+    data: String
 }, { strict: false });
 
-const Auth = mongoose.model('Auth', AuthSchema);
+const Auth = mongoose.models.Auth || mongoose.model('Auth', AuthSchema);
 
 async function useMongoDBAuthState() {
     const writeData = async (data, key) => {
+        const serialized = JSON.stringify(data, BufferJSON.replacer);
         await Auth.findOneAndUpdate(
             { _id: key },
-            { data },
-            { upsert: true }
+            { data: serialized },
+            { upsert: true, new: true }
         );
     };
 
     const readData = async (key) => {
-        const doc = await Auth.findById(key);
-        return doc ? doc.data : null;
+        try {
+            const doc = await Auth.findById(key);
+            if (!doc || !doc.data) return null;
+            return JSON.parse(doc.data, BufferJSON.reviver);
+        } catch {
+            return null;
+        }
     };
 
     const removeData = async (key) => {
-        await Auth.deleteOne({ _id: key });
+        try {
+            await Auth.deleteOne({ _id: key });
+        } catch {}
     };
 
-    const creds = await readData('creds') || {};
+    // Charge ou initialise les creds
+    const storedCreds = await readData('creds');
+    const creds = storedCreds || initAuthCreds();
+
+    // Si creds nouveaux, les sauvegarder immédiatement
+    if (!storedCreds) {
+        await writeData(creds, 'creds');
+    }
 
     return {
         state: {
@@ -33,23 +50,28 @@ async function useMongoDBAuthState() {
             keys: {
                 get: async (type, ids) => {
                     const data = {};
-                    for (const id of ids) {
-                        const val = await readData(`${type}-${id}`);
-                        if (val) data[id] = val;
-                    }
+                    await Promise.all(
+                        ids.map(async (id) => {
+                            const val = await readData(`${type}-${id}`);
+                            if (val) data[id] = val;
+                        })
+                    );
                     return data;
                 },
                 set: async (data) => {
-                    for (const [type, ids] of Object.entries(data)) {
-                        for (const [id, val] of Object.entries(ids)) {
-                            if (val) await writeData(val, `${type}-${id}`);
-                            else await removeData(`${type}-${id}`);
-                        }
-                    }
+                    await Promise.all(
+                        Object.entries(data).flatMap(([type, ids]) =>
+                            Object.entries(ids).map(([id, val]) =>
+                                val
+                                    ? writeData(val, `${type}-${id}`)
+                                    : removeData(`${type}-${id}`)
+                            )
+                        )
+                    );
                 }
             }
         },
-        saveCreds: async (creds) => {
+        saveCreds: async () => {
             await writeData(creds, 'creds');
         }
     };
