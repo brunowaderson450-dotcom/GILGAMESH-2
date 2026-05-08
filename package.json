@@ -4,8 +4,7 @@
   "description": "Gilgamesh Nicholas Bruno — NWB Empire",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "postinstall": "npm install @hapi/boom express" 
+    "start": "node index.js", 
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.9",
