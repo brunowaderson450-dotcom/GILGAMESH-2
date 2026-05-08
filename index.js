@@ -14,12 +14,6 @@ const autonomy = require('./autonomy');
 
 const WONDER_JID = `${process.env.WONDER_NUMBER}@s.whatsapp.net`;
 
-// ── MONITORING RENDER ─────────────────────────────────────
-app.get('/', (req, res) => res.send('👑 Gilgamesh est en ligne.'));
-app.listen(PORT, () => {
-    console.log(`✅ Serveit de monitoring actif sur le port ${PORT}`);
-}); 
-
 // ── MONGODB ───────────────────────────────────────────────
 async function connectDB() {
     try {
