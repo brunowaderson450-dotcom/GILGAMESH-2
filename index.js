@@ -172,7 +172,13 @@ async function send(jid, text) {
     }
 }
 
-startGilgamesh().catch(err => {
+// ── START ─────────────────────────────────────────────────
+startGilgamesh().then(() => {
+    app.get('/', (req, res) => res.send('👑 Gilgamesh est en ligne.'));
+    app.listen(PORT, () => {
+        console.log(`✅ Serveur de monitoring actif sur le port ${PORT}`);
+    });
+}).catch(err => {
     console.error('Erreur fatale:', err);
     process.exit(1);
 });
