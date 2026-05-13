@@ -52,6 +52,31 @@ async function connectDB() {
     }
 }
 
+// ── GMAIL ──────────────────────────────────────────────────
+const gmailChannel = require('./channels/gmail');
+
+async function startGilgamesh() {
+    console.log('👑 Gilgamesh Nicholas Bruno — Démarrage...');
+    await connectDB();
+    
+    // Initialiser Gmail
+    await gmailChannel.initGmail();
+    
+    // Envoyer notification de démarrage
+    await gmailChannel.sendToWonder(
+        'Démarrage',
+        `Gilgamesh est en ligne.\n\nHeure: ${new Date().toLocaleString('fr-FR')}`
+    );
+
+    connectWA().catch(err => {
+        console.error('⚠️ WhatsApp non disponible:', err.message);
+    });
+
+    console.log('👑 Gilgamesh en ligne. Empire NWB actif.');
+}
+
+
+
 // ── WHATSAPP ──────────────────────────────────────────────
 global.waConnected = false;
 let sock = null;
