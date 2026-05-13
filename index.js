@@ -2,17 +2,44 @@ require('dotenv').config();
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
-const { default: makeWASocket, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
-const { useMongoDBAuthState } = require('./auth-mongo');
-const { Boom } = require('@hapi/boom');
 const mongoose = require('mongoose');
-const pino = require('pino');
 const brain = require('./brain');
-const comms = require('./comms');
 const gate = require('./gate');
 const autonomy = require('./autonomy');
+const comms = require('./comms');
 
-const WONDER_JID = `${process.env.WONDER_NUMBER}@s.whatsapp.net`;
+// ── CHANNELS ──────────────────────────────────────────────
+const gmailChannel = require('./channels/gmail');
+const telegramChannel = require('./channels/telegram');
+const whatsappChannel = require('./channels/whatsapp');
+
+// ── MONITORING ────────────────────────────────────────────
+app.get('/', (req, res) => res.send('👑 Gilgamesh est en ligne.'));
+
+app.get('/status', (req, res) => {
+    res.json({
+        status: 'online',
+        mongodb: mongoose.connection.readyState === 1 ? '✅' : '❌',
+        whatsapp: global.waConnected ? '✅' : '❌',
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.get('/reset-auth', async (req, res) => {
+    try {
+        const collections = mongoose.connection.collections;
+        if (collections['auths']) {
+            await collections['auths'].deleteMany({});
+        }
+        res.send('✅ Auth reset. Redémarre le service sur Render.');
+    } catch (err) {
+        res.status(500).send(`❌ Erreur: ${err.message}`);
+    }
+});
+
+app.listen(PORT, () => {
+    console.log(`✅ Serveur de monitoring actif sur le port ${PORT}`);
+});
 
 // ── MONGODB ───────────────────────────────────────────────
 async function connectDB() {
@@ -26,98 +53,120 @@ async function connectDB() {
 }
 
 // ── WHATSAPP ──────────────────────────────────────────────
+global.waConnected = false;
 let sock = null;
-let waConnected = false;
 let isReconnecting = false;
 
-async function startGilgamesh() {
-    await connectDB();
-    await connectWA();
-}
-
 async function connectWA() {
-    const { state, saveCreds } = await useMongoDBAuthState();
-    const { version } = await fetchLatestBaileysVersion();
+    try {
+        const { default: makeWASocket, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+        const { useMongoDBAuthState } = require('./auth-mongo');
+        const { Boom } = require('@hapi/boom');
+        const pino = require('pino');
 
-    sock = makeWASocket({
-        version,
-        auth: state,
-        logger: pino({ level: 'silent' }),
-        printQRInTerminal: false,
-        browser: ["Ubuntu", "Chrome", "20.0.04"],
-    });
+        const WONDER_JID = `${process.env.WONDER_NUMBER}@s.whatsapp.net`;
 
-    // ── LOGIQUE DU PAIRING CODE ──
-    if (!sock.authState.creds.registered) {
-        const phoneNumber = process.env.WONDER_NUMBER; 
-        if (phoneNumber) {
-            setTimeout(async () => {
-                let code = await sock.requestPairingCode(phoneNumber);
-                code = code?.match(/.{1,4}/g)?.join("-") || code;
-                console.log(`\n👑 [ PAIRING CODE ] : ${code.toUpperCase()}\n`);
-            }, 3000);
-        }
-    }
+        const { state, saveCreds } = await useMongoDBAuthState();
+        const { version } = await fetchLatestBaileysVersion();
 
-    sock.ev.on('creds.update', saveCreds);
+        sock = makeWASocket({
+            version,
+            auth: state,
+            logger: pino({ level: 'silent' }),
+            printQRInTerminal: false,
+            browser: ["Ubuntu", "Chrome", "20.0.04"],
+        });
 
-    sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
-        if (connection === 'open') {
-            waConnected = true;
-            isReconnecting = false;
-            console.log('✅ Gilgamesh connecté à WhatsApp');
-            await send(WONDER_JID, `👑 *Gilgamesh en ligne.*\nJe suis là, Wonder.`);
-            autonomy.init(send, WONDER_JID);
-        }
-
-        if (connection === 'close') {
-            waConnected = false;
-            const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            const shouldReconnect = code !== DisconnectReason.loggedOut;
-
-            console.log(`⚠️ Déconnecté (code ${code})`);
-
-            if (shouldReconnect && !isReconnecting) {
-                isReconnecting = true;
-                console.log('🔄 Reconnexion dans 10s...');
+        if (!sock.authState.creds.registered) {
+            const phoneNumber = process.env.WONDER_NUMBER;
+            if (phoneNumber) {
                 setTimeout(async () => {
-                    try { await connectWA(); } 
-                    catch (err) { isReconnecting = false; }
-                }, 10000);
-            } else if (!shouldReconnect) {
-                console.log('❌ Déconnecté définitivement.');
-                await comms.alertWonder('WhatsApp déconnecté.');
+                    try {
+                        let code = await sock.requestPairingCode(phoneNumber);
+                        code = code?.match(/.{1,4}/g)?.join("-") || code;
+                        console.log(`\n👑 [ PAIRING CODE ] : ${code.toUpperCase()}\n`);
+                    } catch (err) {
+                        console.error('❌ Pairing error:', err.message);
+                        setTimeout(async () => {
+                            try {
+                                let code = await sock.requestPairingCode(phoneNumber);
+                                code = code?.match(/.{1,4}/g)?.join("-") || code;
+                                console.log(`\n👑 [ PAIRING CODE RETRY ] : ${code.toUpperCase()}\n`);
+                            } catch (e) {
+                                console.error('❌ Pairing définitivement échoué:', e.message);
+                            }
+                        }, 15000);
+                    }
+                }, 3000);
             }
         }
-    });
 
-    sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return;
-        for (const m of messages) {
-            if (m.key.fromMe) continue;
-            const jid = m.key.remoteJid;
-            const sender = m.key.participant || jid;
-            const isWonder = jid === WONDER_JID || (process.env.WONDER_NUMBER && sender.includes(process.env.WONDER_NUMBER));
+        sock.ev.on('creds.update', saveCreds);
 
-            const text = (m.message?.conversation || m.message?.extendedTextMessage?.text || m.message?.imageMessage?.caption || '').trim();
-            if (!text) continue;
-
-            if (text.startsWith('!') || text.startsWith('/')) {
-                await handleCommand(jid, sender, text, m, isWonder);
-                return;
+        sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
+            if (connection === 'open') {
+                global.waConnected = true;
+                isReconnecting = false;
+                console.log('✅ Gilgamesh connecté à WhatsApp');
+                await send(WONDER_JID, `👑 *Gilgamesh en ligne.*\nJe suis là, Wonder.`);
+                autonomy.init(send, WONDER_JID);
             }
 
-            const isGroup = jid.endsWith('@g.us');
-            const isMentioned = text.toLowerCase().includes('gilgamesh');
-            if (!isGroup || isMentioned || isWonder) {
-                await handleAI(jid, sender, text, isWonder);
+            if (connection === 'close') {
+                global.waConnected = false;
+                const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
+                const shouldReconnect = code !== DisconnectReason.loggedOut;
+                console.log(`⚠️ WhatsApp déconnecté (code ${code})`);
+
+                if (shouldReconnect && !isReconnecting) {
+                    isReconnecting = true;
+                    console.log('🔄 Reconnexion dans 15s...');
+                    setTimeout(async () => {
+                        try { await connectWA(); }
+                        catch (err) { isReconnecting = false; }
+                    }, 15000);
+                } else if (!shouldReconnect) {
+                    console.log('❌ WhatsApp déconnecté définitivement.');
+                }
             }
-        }
-    });
+        });
+
+        sock.ev.on('messages.upsert', async ({ messages, type }) => {
+            if (type !== 'notify') return;
+            for (const m of messages) {
+                if (m.key.fromMe) continue;
+                const jid = m.key.remoteJid;
+                const sender = m.key.participant || jid;
+                const isWonder = jid === WONDER_JID || (process.env.WONDER_NUMBER && sender.includes(process.env.WONDER_NUMBER));
+
+                const text = (
+                    m.message?.conversation ||
+                    m.message?.extendedTextMessage?.text ||
+                    m.message?.imageMessage?.caption || ''
+                ).trim();
+                if (!text) continue;
+
+                if (text.startsWith('!') || text.startsWith('/')) {
+                    await handleCommand(jid, sender, text, isWonder);
+                    return;
+                }
+
+                const isGroup = jid.endsWith('@g.us');
+                const isMentioned = text.toLowerCase().includes('gilgamesh');
+                if (!isGroup || isMentioned || isWonder) {
+                    await handleAI(jid, sender, text, isWonder);
+                }
+            }
+        });
+
+    } catch (err) {
+        console.error('❌ WhatsApp init error:', err.message);
+        console.log('⚠️ Gilgamesh continue sans WhatsApp...');
+    }
 }
 
 // ── COMMANDES ─────────────────────────────────────────────
-async function handleCommand(jid, sender, text, m, isWonder) {
+async function handleCommand(jid, sender, text, isWonder) {
     const [cmd, ...args] = text.slice(1).split(' ');
     const arg = args.join(' ');
 
@@ -126,7 +175,7 @@ async function handleCommand(jid, sender, text, m, isWonder) {
             await send(jid, `👑 En ligne.`);
             break;
         case 'status':
-            await send(jid, `*GILGAMESH STATUS*\n\n⚡ WhatsApp: ✅\n🗄️ MongoDB: ${mongoose.connection.readyState === 1 ? '✅' : '❌'}\n🧠 Groq: ✅`);
+            await send(jid, `*GILGAMESH STATUS*\n\n⚡ WhatsApp: ${global.waConnected ? '✅' : '❌'}\n🗄️ MongoDB: ${mongoose.connection.readyState === 1 ? '✅' : '❌'}\n🧠 Groq: ✅\n⚡ Savage: ✅`);
             break;
         case 'pense':
         case 'think':
@@ -134,11 +183,25 @@ async function handleCommand(jid, sender, text, m, isWonder) {
             const thought = await brain.thinkCode(arg);
             await send(jid, thought);
             break;
+        case 'update':
+            if (!isWonder) return await send(jid, `Accès réservé.`);
+            const result = await gate.selfUpdate(arg);
+            await send(jid, result.succes ? `✅ ${result.message}` : `❌ ${result.erreur}`);
+            break;
+        case 'rollback':
+            if (!isWonder) return await send(jid, `Accès réservé.`);
+            const rb = await gate.rollback(arg);
+            await send(jid, rb.succes ? `✅ ${rb.message}` : `❌ ${rb.erreur}`);
+            break;
+        case 'historique':
+            if (!isWonder) return await send(jid, `Accès réservé.`);
+            const hist = await gate.historique();
+            await send(jid, hist);
+            break;
         case 'aide':
         case 'help':
-            await send(jid, `*COMMANDES GILGAMESH*\n\n!ping\n!status\n!pense\n!update\n!rollback\n!historique\n!oublie\n\n— Gilgamesh Nicholas Bruno 👑`);
+            await send(jid, `*COMMANDES GILGAMESH*\n\n!ping\n!status\n!pense [prompt]\n!update [instruction]\n!rollback [fichier]\n!historique\n\n— Gilgamesh Nicholas Bruno 👑`);
             break;
-        // ... Garde tes autres cases (update, rollback, etc.) ici
         default:
             console.log(`Commande inconnue: ${cmd}`);
     }
@@ -159,7 +222,7 @@ async function handleAI(jid, sender, text, isWonder) {
 // ── SEND ──────────────────────────────────────────────────
 async function send(jid, text) {
     try {
-        if (!waConnected || !sock) return;
+        if (!global.waConnected || !sock) return;
         await sock.sendMessage(jid, { text });
     } catch (err) {
         console.error('send error:', err.message);
@@ -167,12 +230,19 @@ async function send(jid, text) {
 }
 
 // ── START ─────────────────────────────────────────────────
-startGilgamesh().then(() => {
-    app.get('/', (req, res) => res.send('👑 Gilgamesh est en ligne.'));
-    app.listen(PORT, () => {
-        console.log(`✅ Serveur de monitoring actif sur le port ${PORT}`);
+async function startGilgamesh() {
+    console.log('👑 Gilgamesh Nicholas Bruno — Démarrage...');
+    await connectDB();
+
+    // WhatsApp — optionnel, ne bloque pas le démarrage
+    connectWA().catch(err => {
+        console.error('⚠️ WhatsApp non disponible:', err.message);
     });
-}).catch(err => {
+
+    console.log('👑 Gilgamesh en ligne. Empire NWB actif.');
+}
+
+startGilgamesh().catch(err => {
     console.error('Erreur fatale:', err);
     process.exit(1);
 });
