@@ -6,40 +6,34 @@ const mongoose = require('mongoose');
 const brain = require('./brain');
 const gate = require('./gate');
 const autonomy = require('./autonomy');
-const comms = require('./comms');
+const { sendToWonder, alertWonder, startEmailListener } = require('./channels/gmail');
 
-// ── CHANNELS ──────────────────────────────────────────────
-const gmailChannel = require('./channels/gmail');
-const telegramChannel = require('./channels/telegram');
-const whatsappChannel = require('./channels/whatsapp');
+// ── CHANNELS VIDES ────────────────────────────────────────
+require('./channels/telegram');
+require('./channels/whatsapp');
 
 // ── MONITORING ────────────────────────────────────────────
 app.get('/', (req, res) => res.send('👑 Gilgamesh est en ligne.'));
 
-app.get('/status', (req, res) => {
-    res.json({
-        status: 'online',
-        mongodb: mongoose.connection.readyState === 1 ? '✅' : '❌',
-        whatsapp: global.waConnected ? '✅' : '❌',
-        timestamp: new Date().toISOString()
-    });
-});
+app.get('/status', (req, res) => res.json({
+    status: 'online',
+    mongodb: mongoose.connection.readyState === 1 ? '✅' : '❌',
+    whatsapp: global.waConnected ? '✅' : '❌',
+    gmail: '✅',
+    timestamp: new Date().toISOString()
+}));
 
 app.get('/reset-auth', async (req, res) => {
     try {
         const collections = mongoose.connection.collections;
-        if (collections['auths']) {
-            await collections['auths'].deleteMany({});
-        }
+        if (collections['auths']) await collections['auths'].deleteMany({});
         res.send('✅ Auth reset. Redémarre le service sur Render.');
     } catch (err) {
         res.status(500).send(`❌ Erreur: ${err.message}`);
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`✅ Serveur de monitoring actif sur le port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`✅ Serveur actif sur le port ${PORT}`));
 
 // ── MONGODB ───────────────────────────────────────────────
 async function connectDB() {
@@ -47,32 +41,9 @@ async function connectDB() {
         await mongoose.connect(process.env.MONGODB_URI);
         console.log('🗄️  MongoDB connecté');
     } catch (err) {
-        console.error('❌ Erreur MongoDB:', err.message);
+        console.error('❌ MongoDB:', err.message);
         process.exit(1);
     }
-}
-
-// ── GMAIL ──────────────────────────────────────────────────
-const gmailChannel = require('./channels/gmail');
-
-async function startGilgamesh() {
-    console.log('👑 Gilgamesh Nicholas Bruno — Démarrage...');
-    await connectDB();
-    
-    // Initialiser Gmail
-    await gmailChannel.initGmail();
-    
-    // Envoyer notification de démarrage
-    await gmailChannel.sendToWonder(
-        'Démarrage',
-        `Gilgamesh est en ligne.\n\nHeure: ${new Date().toLocaleString('fr-FR')}`
-    );
-
-    connectWA().catch(err => {
-        console.error('⚠️ WhatsApp non disponible:', err.message);
-    });
-
-    console.log('👑 Gilgamesh en ligne. Empire NWB actif.');
 }
 
 // ── WHATSAPP ──────────────────────────────────────────────
@@ -86,18 +57,16 @@ async function connectWA() {
         const { useMongoDBAuthState } = require('./auth-mongo');
         const { Boom } = require('@hapi/boom');
         const pino = require('pino');
-
         const WONDER_JID = `${process.env.WONDER_NUMBER}@s.whatsapp.net`;
 
         const { state, saveCreds } = await useMongoDBAuthState();
         const { version } = await fetchLatestBaileysVersion();
 
         sock = makeWASocket({
-            version,
-            auth: state,
+            version, auth: state,
             logger: pino({ level: 'silent' }),
             printQRInTerminal: false,
-            browser: ["Ubuntu", "Chrome", "20.0.04"],
+            browser: ["Ubuntu", "Chrome", "20.0.04"]
         });
 
         if (!sock.authState.creds.registered) {
@@ -116,7 +85,7 @@ async function connectWA() {
                                 code = code?.match(/.{1,4}/g)?.join("-") || code;
                                 console.log(`\n👑 [ PAIRING CODE RETRY ] : ${code.toUpperCase()}\n`);
                             } catch (e) {
-                                console.error('❌ Pairing définitivement échoué:', e.message);
+                                console.error('❌ Pairing échoué:', e.message);
                             }
                         }, 15000);
                     }
@@ -134,13 +103,11 @@ async function connectWA() {
                 await send(WONDER_JID, `👑 *Gilgamesh en ligne.*\nJe suis là, Wonder.`);
                 autonomy.init(send, WONDER_JID);
             }
-
             if (connection === 'close') {
                 global.waConnected = false;
                 const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
                 const shouldReconnect = code !== DisconnectReason.loggedOut;
                 console.log(`⚠️ WhatsApp déconnecté (code ${code})`);
-
                 if (shouldReconnect && !isReconnecting) {
                     isReconnecting = true;
                     console.log('🔄 Reconnexion dans 15s...');
@@ -161,29 +128,20 @@ async function connectWA() {
                 const jid = m.key.remoteJid;
                 const sender = m.key.participant || jid;
                 const isWonder = jid === WONDER_JID || (process.env.WONDER_NUMBER && sender.includes(process.env.WONDER_NUMBER));
-
-                const text = (
-                    m.message?.conversation ||
-                    m.message?.extendedTextMessage?.text ||
-                    m.message?.imageMessage?.caption || ''
-                ).trim();
+                const text = (m.message?.conversation || m.message?.extendedTextMessage?.text || m.message?.imageMessage?.caption || '').trim();
                 if (!text) continue;
-
                 if (text.startsWith('!') || text.startsWith('/')) {
                     await handleCommand(jid, sender, text, isWonder);
                     return;
                 }
-
                 const isGroup = jid.endsWith('@g.us');
                 const isMentioned = text.toLowerCase().includes('gilgamesh');
-                if (!isGroup || isMentioned || isWonder) {
-                    await handleAI(jid, sender, text, isWonder);
-                }
+                if (!isGroup || isMentioned || isWonder) await handleAI(jid, sender, text, isWonder);
             }
         });
 
     } catch (err) {
-        console.error('❌ WhatsApp init error:', err.message);
+        console.error('❌ WhatsApp init:', err.message);
         console.log('⚠️ Gilgamesh continue sans WhatsApp...');
     }
 }
@@ -192,57 +150,42 @@ async function connectWA() {
 async function handleCommand(jid, sender, text, isWonder) {
     const [cmd, ...args] = text.slice(1).split(' ');
     const arg = args.join(' ');
-
     switch (cmd.toLowerCase()) {
-        case 'ping':
-            await send(jid, `👑 En ligne.`);
-            break;
+        case 'ping': await send(jid, `👑 En ligne.`); break;
         case 'status':
-            await send(jid, `*GILGAMESH STATUS*\n\n⚡ WhatsApp: ${global.waConnected ? '✅' : '❌'}\n🗄️ MongoDB: ${mongoose.connection.readyState === 1 ? '✅' : '❌'}\n🧠 Groq: ✅\n⚡ Savage: ✅`);
+            await send(jid, `*GILGAMESH STATUS*\n\n⚡ WhatsApp: ${global.waConnected ? '✅' : '❌'}\n🗄️ MongoDB: ${mongoose.connection.readyState === 1 ? '✅' : '❌'}\n🧠 Groq: ✅\n⚡ Savage: ✅\n📧 Gmail: ✅`);
             break;
-        case 'pense':
-        case 'think':
+        case 'pense': case 'think':
             if (!isWonder) return await send(jid, `Accès réservé.`);
-            const thought = await brain.thinkCode(arg);
-            await send(jid, thought);
-            break;
+            await send(jid, await brain.thinkCode(arg)); break;
         case 'update':
             if (!isWonder) return await send(jid, `Accès réservé.`);
             const result = await gate.selfUpdate(arg);
-            await send(jid, result.succes ? `✅ ${result.message}` : `❌ ${result.erreur}`);
-            break;
+            await send(jid, result.succes ? `✅ ${result.message}` : `❌ ${result.erreur}`); break;
         case 'rollback':
             if (!isWonder) return await send(jid, `Accès réservé.`);
             const rb = await gate.rollback(arg);
-            await send(jid, rb.succes ? `✅ ${rb.message}` : `❌ ${rb.erreur}`);
-            break;
+            await send(jid, rb.succes ? `✅ ${rb.message}` : `❌ ${rb.erreur}`); break;
         case 'historique':
             if (!isWonder) return await send(jid, `Accès réservé.`);
-            const hist = await gate.historique();
-            await send(jid, hist);
-            break;
-        case 'aide':
-        case 'help':
+            await send(jid, await gate.historique()); break;
+        case 'aide': case 'help':
             await send(jid, `*COMMANDES GILGAMESH*\n\n!ping\n!status\n!pense [prompt]\n!update [instruction]\n!rollback [fichier]\n!historique\n\n— Gilgamesh Nicholas Bruno 👑`);
             break;
-        default:
-            console.log(`Commande inconnue: ${cmd}`);
+        default: console.log(`Commande inconnue: ${cmd}`);
     }
 }
 
-// ── IA HANDLER ────────────────────────────────────────────
 async function handleAI(jid, sender, text, isWonder) {
     try {
         const userId = isWonder ? 'wonder' : sender;
         if (isWonder) autonomy.onWonderMessage(text);
-        const reply = await brain.process(userId, text);
-        await send(jid, reply);
+        await send(jid, await brain.process(userId, text));
     } catch (err) {
         await send(jid, `Une interférence. Réessaie.`);
     }
 }
 
-// ── SEND ──────────────────────────────────────────────────
 async function send(jid, text) {
     try {
         if (!global.waConnected || !sock) return;
@@ -256,12 +199,9 @@ async function send(jid, text) {
 async function startGilgamesh() {
     console.log('👑 Gilgamesh Nicholas Bruno — Démarrage...');
     await connectDB();
-
-    // WhatsApp — optionnel, ne bloque pas le démarrage
-    connectWA().catch(err => {
-        console.error('⚠️ WhatsApp non disponible:', err.message);
-    });
-
+    connectWA().catch(err => console.error('⚠️ WhatsApp:', err.message));
+    startEmailListener();
+    await sendToWonder('Démarrage', `Gilgamesh est en ligne.\nHeure: ${new Date().toLocaleString('fr-FR')}`);
     console.log('👑 Gilgamesh en ligne. Empire NWB actif.');
 }
 
