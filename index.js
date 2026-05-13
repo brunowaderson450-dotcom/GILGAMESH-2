@@ -75,8 +75,6 @@ async function startGilgamesh() {
     console.log('👑 Gilgamesh en ligne. Empire NWB actif.');
 }
 
-
-
 // ── WHATSAPP ──────────────────────────────────────────────
 global.waConnected = false;
 let sock = null;
