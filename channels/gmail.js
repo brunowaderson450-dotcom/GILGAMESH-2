@@ -10,8 +10,8 @@ let gmailCheckInterval = null;
 
 const IMAP_CONFIG = {
     imap: {
-        user: process.env.GMAIL_BOT_ADDRESS,
-        password: process.env.GMAIL_BOT_APP_PASSWORD,
+        user: process.env.EMAIL_USER,
+        password: process.env.EMAIL_PASS,
         host: 'imap.gmail.com',
         port: 993,
         tls: true,
@@ -28,8 +28,8 @@ async function initGmailSend() {
         transporter = nodemailer.createTransport({
             service: 'gmail',
             auth: {
-                user: process.env.GMAIL_BOT_ADDRESS,
-                pass: process.env.GMAIL_BOT_APP_PASSWORD
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS
             }
         });
 
@@ -175,7 +175,7 @@ async function replyToEmail(to, subject, message) {
 // ── ENVOYER À TOI (WONDER) ─────────────────────────────────
 async function sendToWonder(subject, message) {
     return await sendEmail(
-        process.env.GMAIL_WONDER_ADDRESS,
+        process.env.EMAIL_TO,
         `👑 Gilgamesh — ${subject}`,
         message
     );
